@@ -28,10 +28,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# Dla systemu Linux (np. Render/VPS) usuń rozszerzenie ".exe" -> "piper"
-PIPER_EXE = os.path.join(BASE_DIR, "piper", "piper.exe")
-
 
 class TTSRequest(BaseModel):
     text: str
@@ -40,7 +36,6 @@ class TTSRequest(BaseModel):
 
 def ensure_model_exists(model_input: str) -> str:
     """Sprawdza, czy model istnieje lokalnie, lub pobiera go, jeśli przekazano URL."""
-    # Jeśli przekazano URL (http:// lub https://)
     if model_input.startswith(("http://", "https://")):
         filename = os.path.basename(model_input)
         local_path = os.path.join(BASE_DIR, "models", filename)
@@ -63,7 +58,7 @@ def ensure_model_exists(model_input: str) -> str:
 
         return local_path
 
-    # Jeśli przekazano ścieżkę lokalną (np. "en_GB-jenny_dioco-medium.onnx")
+    # Jeśli przekazano ścieżkę lokalną
     local_path = os.path.join(BASE_DIR, model_input)
     if not os.path.exists(local_path):
         raise FileNotFoundError(f"Plik modelu {local_path} nie istnieje na serwerze.")
@@ -77,7 +72,6 @@ async def generate_tts(request: TTSRequest):
         raise HTTPException(status_code=400, detail="Tekst nie może być pusty")
 
     try:
-        # Pobranie lub weryfikacja ścieżki do modelu .onnx
         model_path = ensure_model_exists(request.model_href)
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"Błąd modelu: {str(e)}")
@@ -109,8 +103,5 @@ async def generate_tts(request: TTSRequest):
 
 
 if __name__ == "__main__":
-    import uvicorn
-    import os
-
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
