@@ -7,6 +7,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import uvicorn
+import sys
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Automatyczne wykrywanie systemu: na Linuksie (Render) nie ma rozszerzenia .exe
+if sys.platform == "win32":
+    PIPER_EXE = os.path.join(BASE_DIR, "piper", "piper.exe")
+else:
+    PIPER_EXE = os.path.join(BASE_DIR, "piper", "piper")
 
 app = FastAPI()
 
