@@ -1,17 +1,17 @@
 import os
+import stat
 import tempfile
 import subprocess
 import urllib.request
+import sys
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import uvicorn
-import sys
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Automatyczne wykrywanie systemu: na Linuksie (Render) nie ma rozszerzenia .exe
 if sys.platform == "win32":
     PIPER_EXE = os.path.join(BASE_DIR, "piper", "piper.exe")
 else:
@@ -19,7 +19,6 @@ else:
 
 app = FastAPI()
 
-# Włączenie CORS – umożliwia komunikację ze stroną www (np. Netlify)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -31,23 +30,22 @@ app.add_middleware(
 
 class TTSRequest(BaseModel):
     text: str
-    model_href: str  # Przekazana ścieżka lub URL z pliku voices.txt
+    model_href: str
 
 
 def ensure_model_exists(model_input: str) -> str:
     """Sprawdza, czy model istnieje lokalnie, lub pobiera go, jeśli przekazano URL."""
     if model_input.startswith(("http://", "https://")):
         filename = os.path.basename(model_input)
-        local_path = os.path.join(BASE_DIR, "models", filename)
+        models_dir = os.path.join(BASE_DIR, "models")
+        local_path = os.path.join(models_dir, filename)
 
-        os.makedirs(os.path.join(BASE_DIR, "models"), exist_ok=True)
+        os.makedirs(models_dir, exist_ok=True)
 
-        # Pobieranie pliku .onnx, jeśli jeszcze go nie ma
         if not os.path.exists(local_path):
             print(f"⏳ Pobieranie modelu z {model_input}...")
             urllib.request.urlretrieve(model_input, local_path)
 
-            # Pobieranie odpowiadającego pliku .json (wymagany przez Piper)
             json_url = model_input + ".json"
             json_path = local_path + ".json"
             if not os.path.exists(json_path):
@@ -58,7 +56,6 @@ def ensure_model_exists(model_input: str) -> str:
 
         return local_path
 
-    # Jeśli przekazano ścieżkę lokalną
     local_path = os.path.join(BASE_DIR, model_input)
     if not os.path.exists(local_path):
         raise FileNotFoundError(f"Plik modelu {local_path} nie istnieje na serwerze.")
@@ -71,35 +68,45 @@ async def generate_tts(request: TTSRequest):
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="Tekst nie może być pusty")
 
+    # 1. Nadanie uprawnień do wykonywania binarki Piper na Linuksie
+    if sys.platform != "win32" and os.path.exists(PIPER_EXE):
+        st = os.stat(PIPER_EXE)
+        os.chmod(PIPER_EXE, st.st_mode | stat.S_IEXEC)
+
     try:
         model_path = ensure_model_exists(request.model_href)
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"Błąd modelu: {str(e)}")
 
-    # Tworzenie tymczasowego pliku WAV
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-    output_path = temp_file.name
-    temp_file.close()
+    # 2. Bezpieczne tworzenie ścieżki pliku wyjściowego
+    fd, output_path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)  # Zamknięcie uchwytu, aby Piper mógł do niego swobodnie pisać
 
     clean_text = " ".join(request.text.split()) + "\n"
-
     command = [PIPER_EXE, "--model", model_path, "--output_file", output_path]
 
     try:
         # Generowanie pliku WAV
-        subprocess.run(
+        process = subprocess.run(
             command,
             input=clean_text.encode("utf-8"),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             check=True,
         )
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as err:
         if os.path.exists(output_path):
             os.remove(output_path)
-        raise HTTPException(status_code=500, detail="Błąd wykonania Piper TTS")
+        error_msg = err.stderr.decode("utf-8", errors="ignore")
+        print(f"❌ Błąd Pipera: {error_msg}")
+        raise HTTPException(status_code=500, detail=f"Błąd wykonania Piper TTS: {error_msg}")
 
-    return FileResponse(output_path, media_type="audio/wav", filename="speech.wav")
+    # Zwrócenie pliku audio (FastAPI automatycznie go wyśle)
+    return FileResponse(
+        output_path, 
+        media_type="audio/wav", 
+        filename="speech.wav"
+    )
 
 
 if __name__ == "__main__":
